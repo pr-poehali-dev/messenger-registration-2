@@ -1,0 +1,14 @@
+{
+  "tests": [
+    {
+      "name": "Search no auth",
+      "method": "GET",
+      "path": "/search?q=test",
+      "expectedStatus": 401,
+      "expectedBody": {
+        "error": "string"
+      },
+      "bodyMatcher": "partial"
+    }
+  ]
+}

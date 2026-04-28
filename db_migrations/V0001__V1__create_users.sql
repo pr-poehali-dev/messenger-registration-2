@@ -1,0 +1,16 @@
+CREATE TABLE users (
+  id SERIAL PRIMARY KEY,
+  username VARCHAR(32) UNIQUE NOT NULL,
+  name VARCHAR(100) NOT NULL,
+  password_hash VARCHAR(255) NOT NULL,
+  avatar_url TEXT,
+  bio TEXT DEFAULT '',
+  badge VARCHAR(20) DEFAULT NULL,
+  badge_label VARCHAR(50) DEFAULT NULL,
+  is_developer BOOLEAN DEFAULT FALSE,
+  avatar_border VARCHAR(20) DEFAULT NULL,
+  is_banned BOOLEAN DEFAULT FALSE,
+  ban_until TIMESTAMPTZ DEFAULT NOW(),
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  last_seen TIMESTAMPTZ DEFAULT NOW()
+)

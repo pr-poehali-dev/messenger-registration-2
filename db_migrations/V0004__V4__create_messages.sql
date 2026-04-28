@@ -1,0 +1,10 @@
+CREATE TABLE messages (
+  id SERIAL PRIMARY KEY,
+  conversation_id INTEGER,
+  sender_id INTEGER,
+  text TEXT NOT NULL,
+  is_read BOOLEAN DEFAULT FALSE,
+  removed BOOLEAN DEFAULT FALSE,
+  edited BOOLEAN DEFAULT FALSE,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+)
