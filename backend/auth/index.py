@@ -2,11 +2,9 @@ import json
 import os
 import hashlib
 import secrets
-from datetime import datetime, timezone
 
 import psycopg2
 from psycopg2.extras import RealDictCursor
-
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 SCHEMA = os.environ["MAIN_DB_SCHEMA"]
@@ -22,38 +20,34 @@ CORS_HEADERS = {
 def get_conn():
     conn = psycopg2.connect(DATABASE_URL)
     with conn.cursor() as cur:
-        cur.execute(f"SET search_path TO {SCHEMA}")
+        cur.execute(f"SET search_path TO \"{SCHEMA}\"")
     conn.commit()
     return conn
 
 
-def hash_password(password: str) -> str:
-    return hashlib.sha256(password.encode("utf-8")).hexdigest()
+def hash_pw(password: str) -> str:
+    return hashlib.sha256(password.encode()).hexdigest()
 
 
-def response(status_code: int, body: dict) -> dict:
-    return {
-        "statusCode": status_code,
-        "headers": CORS_HEADERS,
-        "body": json.dumps(body, default=str),
-    }
+def resp(code: int, body: dict) -> dict:
+    return {"statusCode": code, "headers": CORS_HEADERS, "body": json.dumps(body, default=str)}
 
 
-def extract_token(event: dict) -> str | None:
-    headers = event.get("headers") or {}
-    auth = headers.get("X-Authorization") or headers.get("x-authorization") or ""
+def extract_token(event: dict):
+    h = event.get("headers") or {}
+    auth = h.get("X-Authorization") or h.get("x-authorization") or h.get("Authorization") or h.get("authorization") or ""
     if auth.startswith("Bearer "):
         return auth[7:]
     return None
 
 
-def user_row_to_dict(row: dict) -> dict:
+def user_to_dict(row: dict) -> dict:
     return {
         "id": row["id"],
         "username": row["username"],
         "name": row["name"],
         "avatar_url": row.get("avatar_url"),
-        "bio": row.get("bio"),
+        "bio": row.get("bio") or "",
         "badge": row.get("badge"),
         "badge_label": row.get("badge_label"),
         "is_developer": row.get("is_developer", False),
@@ -65,234 +59,149 @@ def user_row_to_dict(row: dict) -> dict:
     }
 
 
-def ensure_tables(conn):
-    with conn.cursor() as cur:
-        cur.execute(f"SET search_path TO {SCHEMA}")
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                id               SERIAL PRIMARY KEY,
-                username         VARCHAR(64) UNIQUE NOT NULL,
-                name             VARCHAR(128) NOT NULL,
-                password_hash    VARCHAR(64) NOT NULL,
-                avatar_url       TEXT,
-                bio              TEXT,
-                badge            VARCHAR(64),
-                badge_label      VARCHAR(128),
-                is_developer     BOOLEAN NOT NULL DEFAULT FALSE,
-                avatar_border    VARCHAR(64),
-                is_banned        BOOLEAN NOT NULL DEFAULT FALSE,
-                ban_until        TIMESTAMPTZ,
-                created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                last_seen        TIMESTAMPTZ
-            )
-        """)
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS sessions (
-                token      VARCHAR(64) PRIMARY KEY,
-                user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            )
-        """)
-    conn.commit()
-
-
 def handle_register(body: dict) -> dict:
-    username = (body.get("username") or "").strip()
+    """Регистрация нового пользователя."""
+    username = (body.get("username") or "").strip().lower()
     name = (body.get("name") or "").strip()
     password = body.get("password") or ""
 
     if not username or not name or not password:
-        return response(400, {"error": "username, name and password are required"})
+        return resp(400, {"error": "Заполните все поля"})
+    if len(username) < 3:
+        return resp(400, {"error": "Логин минимум 3 символа"})
+    if len(password) < 6:
+        return resp(400, {"error": "Пароль минимум 6 символов"})
 
     conn = get_conn()
-    ensure_tables(conn)
-
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute("SELECT id FROM users WHERE username = %s", (username,))
         if cur.fetchone():
             conn.close()
-            return response(409, {"error": "Username already taken"})
+            return resp(409, {"error": "Этот логин уже занят"})
 
-        pw_hash = hash_password(password)
-
-        # Check if this will be the first user
         cur.execute("SELECT COUNT(*) AS cnt FROM users")
-        count = cur.fetchone()["cnt"]
-        is_first = count == 0
+        is_first = cur.fetchone()["cnt"] == 0
 
+        pw_hash = hash_pw(password)
         if is_first:
             cur.execute(
-                """
-                INSERT INTO users
-                    (username, name, password_hash, badge, badge_label, is_developer, avatar_border, bio)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                RETURNING *
-                """,
-                (
-                    username,
-                    name,
-                    pw_hash,
-                    "red_black",
-                    "Разработчик",
-                    True,
-                    "gold",
-                    "Разработчик приложения",
-                ),
+                "INSERT INTO users (username, name, password_hash, badge, badge_label, is_developer, avatar_border, bio) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING *",
+                (username, name, pw_hash, "red_black", "Разработчик", True, "gold", "Разработчик приложения"),
             )
         else:
             cur.execute(
-                """
-                INSERT INTO users (username, name, password_hash)
-                VALUES (%s, %s, %s)
-                RETURNING *
-                """,
+                "INSERT INTO users (username, name, password_hash) VALUES (%s, %s, %s) RETURNING *",
                 (username, name, pw_hash),
             )
-
         user = dict(cur.fetchone())
 
         token = secrets.token_hex(32)
-        cur.execute(
-            "INSERT INTO sessions (token, user_id) VALUES (%s, %s)",
-            (token, user["id"]),
-        )
-
-        cur.execute(
-            "UPDATE users SET last_seen = NOW() WHERE id = %s",
-            (user["id"],),
-        )
+        cur.execute("INSERT INTO sessions (token, user_id) VALUES (%s, %s)", (token, user["id"]))
+        cur.execute("UPDATE users SET last_seen = NOW() WHERE id = %s", (user["id"],))
 
     conn.commit()
     conn.close()
-
-    return response(200, {"token": token, "user": user_row_to_dict(user)})
+    return resp(200, {"token": token, "user": user_to_dict(user)})
 
 
 def handle_login(body: dict) -> dict:
-    username = (body.get("username") or "").strip()
+    """Вход в аккаунт."""
+    username = (body.get("username") or "").strip().lower()
     password = body.get("password") or ""
 
     if not username or not password:
-        return response(400, {"error": "username and password are required"})
+        return resp(400, {"error": "Заполните все поля"})
 
     conn = get_conn()
-    ensure_tables(conn)
-
-    pw_hash = hash_password(password)
-
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(
             "SELECT * FROM users WHERE username = %s AND password_hash = %s",
-            (username, pw_hash),
+            (username, hash_pw(password)),
         )
         user = cur.fetchone()
-
         if not user:
             conn.close()
-            return response(401, {"error": "Invalid username or password"})
+            return resp(401, {"error": "Неверный логин или пароль"})
 
         user = dict(user)
-        token = secrets.token_hex(32)
 
-        cur.execute(
-            "INSERT INTO sessions (token, user_id) VALUES (%s, %s)",
-            (token, user["id"]),
-        )
-        cur.execute(
-            "UPDATE users SET last_seen = NOW() WHERE id = %s",
-            (user["id"],),
-        )
+        if user.get("is_banned") and user.get("ban_until"):
+            from datetime import datetime, timezone
+            ban_until = user["ban_until"]
+            if hasattr(ban_until, "tzinfo"):
+                now = datetime.now(timezone.utc)
+                if ban_until > now:
+                    conn.close()
+                    return resp(403, {"error": f"Аккаунт заблокирован до {ban_until}"})
+            cur.execute("UPDATE users SET is_banned = FALSE, ban_until = NULL WHERE id = %s", (user["id"],))
+
+        token = secrets.token_hex(32)
+        cur.execute("INSERT INTO sessions (token, user_id) VALUES (%s, %s)", (token, user["id"]))
+        cur.execute("UPDATE users SET last_seen = NOW() WHERE id = %s", (user["id"],))
 
     conn.commit()
     conn.close()
-
-    return response(200, {"token": token, "user": user_row_to_dict(user)})
+    return resp(200, {"token": token, "user": user_to_dict(user)})
 
 
 def handle_logout(event: dict) -> dict:
+    """Выход из аккаунта."""
     token = extract_token(event)
-
     if not token:
-        return response(401, {"error": "Missing authorization token"})
+        return resp(401, {"error": "Нет токена"})
 
     conn = get_conn()
-    ensure_tables(conn)
-
     with conn.cursor() as cur:
         cur.execute("DELETE FROM sessions WHERE token = %s", (token,))
-
     conn.commit()
     conn.close()
-
-    return response(200, {"success": True})
+    return resp(200, {"ok": True})
 
 
 def handle_me(event: dict) -> dict:
+    """Получить текущего пользователя."""
     token = extract_token(event)
-
     if not token:
-        return response(401, {"error": "Missing authorization token"})
+        return resp(401, {"error": "Нет токена"})
 
     conn = get_conn()
-    ensure_tables(conn)
-
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(
-            """
-            SELECT u.*
-            FROM users u
-            JOIN sessions s ON s.user_id = u.id
-            WHERE s.token = %s
-            """,
+            "SELECT u.* FROM users u JOIN sessions s ON s.user_id = u.id WHERE s.token = %s",
             (token,),
         )
         user = cur.fetchone()
-
         if not user:
             conn.close()
-            return response(401, {"error": "Invalid or expired token"})
-
+            return resp(401, {"error": "Токен недействителен"})
         user = dict(user)
-
-        cur.execute(
-            "UPDATE users SET last_seen = NOW() WHERE id = %s",
-            (user["id"],),
-        )
-
+        cur.execute("UPDATE users SET last_seen = NOW() WHERE id = %s", (user["id"],))
     conn.commit()
     conn.close()
-
-    return response(200, {"user": user_row_to_dict(user)})
+    return resp(200, user_to_dict(user))
 
 
 def handler(event: dict, context) -> dict:
+    """Auth функция: /register, /login, /logout, /me"""
     method = (event.get("httpMethod") or "").upper()
-    path = event.get("path") or ""
-
-    # Strip trailing slash for consistency
-    path = path.rstrip("/") or "/"
+    path = (event.get("path") or "/").rstrip("/") or "/"
 
     if method == "OPTIONS":
-        return {
-            "statusCode": 204,
-            "headers": CORS_HEADERS,
-            "body": "",
-        }
+        return {"statusCode": 204, "headers": CORS_HEADERS, "body": ""}
 
-    if method == "POST" and path == "/register":
-        raw_body = event.get("body") or "{}"
-        body = json.loads(raw_body) if isinstance(raw_body, str) else raw_body
+    if method == "POST" and path.endswith("/register"):
+        body = json.loads(event.get("body") or "{}")
         return handle_register(body)
 
-    if method == "POST" and path == "/login":
-        raw_body = event.get("body") or "{}"
-        body = json.loads(raw_body) if isinstance(raw_body, str) else raw_body
+    if method == "POST" and path.endswith("/login"):
+        body = json.loads(event.get("body") or "{}")
         return handle_login(body)
 
-    if method == "POST" and path == "/logout":
+    if method == "POST" and path.endswith("/logout"):
         return handle_logout(event)
 
-    if method == "GET" and path == "/me":
+    if method == "GET" and path.endswith("/me"):
         return handle_me(event)
 
-    return response(404, {"error": f"Route not found: {method} {path}"})
+    return resp(404, {"error": "Not found"})

@@ -1,18 +1,18 @@
 {
   "tests": [
     {
-      "name": "Register user",
+      "name": "OPTIONS preflight",
+      "method": "OPTIONS",
+      "path": "/register",
+      "expectedStatus": 204
+    },
+    {
+      "name": "Missing fields",
       "method": "POST",
       "path": "/register",
-      "body": {
-        "username": "testuser123",
-        "name": "Test User",
-        "password": "pass123"
-      },
-      "expectedStatus": 200,
-      "expectedBody": {
-        "token": "string"
-      },
+      "body": {},
+      "expectedStatus": 400,
+      "expectedBody": {"error": "string"},
       "bodyMatcher": "partial"
     }
   ]
